@@ -1,5 +1,6 @@
 using SFB;
 using System;
+using System.IO;
 using UnityEngine;
 using UnityEngine.Video;
 
@@ -9,26 +10,28 @@ public class VideoManagerBehaviour : MonoBehaviour {
     VideoPlayer videoPlayer;
     RenderTexture rt = null;
     public Material SkyboxMaterial;
+    public Material BlitPartMaterial;
 
-    public Camera[] eyes;
+    public Camera leftEye;
+    public Camera rightEye;
+    Camera[] eyes;
+    CameraRenderBehaviour[] renderers;
 
     string previousFolder;
 
     private void Awake() {
         previousFolder = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
 
+        eyes = new Camera[] { leftEye, rightEye };
+        renderers = new CameraRenderBehaviour[eyes.Length];
+        for (int i = 0; i < eyes.Length; i++)
+            renderers[i] = eyes[i].GetComponent<CameraRenderBehaviour>();
+
         videoPlayer = GetComponent<VideoPlayer>();
         videoPlayer.prepareCompleted += HandlePreparedVideo;
+        videoPlayer.errorReceived += OpenMediaNonVideo;
         Screen.fullScreenMode = FullScreenMode.FullScreenWindow;
         videoPlayer.Prepare();
-    }
-
-    private void HandlePreparedVideo(VideoPlayer source) {
-        var tex = videoPlayer.texture;
-        Debug.Log($"Video resolution {tex.width}Å~{tex.height}");
-        rt = new(tex.width, tex.height, 0, RenderTextureFormat.Default);
-        source.targetTexture = rt;
-        SkyboxMaterial.mainTexture = rt;
     }
 
     static readonly (KeyCode, Action<VideoPlayer>)[] videoActions = new (KeyCode, Action<VideoPlayer>)[] {
@@ -51,6 +54,8 @@ public class VideoManagerBehaviour : MonoBehaviour {
         (KeyCode.F, v => Screen.fullScreen = !Screen.fullScreen),
     };
 
+    
+
     private void Update() {
         if (Input.GetKeyDown(KeyCode.O)) {
             Cursor.visible = true;
@@ -58,12 +63,10 @@ public class VideoManagerBehaviour : MonoBehaviour {
             if (videoPlayer.isPlaying)
                 videoPlayer.Pause();
 
-            var paths = StandaloneFileBrowser.OpenFilePanel("Open video", previousFolder, "*", false);
+            var paths = StandaloneFileBrowser.OpenFilePanel("Open media", previousFolder, "*", false);
             if (paths.Length == 1) {
-                previousFolder = System.IO.Path.GetDirectoryName(paths[0]);
-                videoPlayer.Stop();
-                videoPlayer.url = $"file://{paths[0]}";
-                videoPlayer.Play();
+                previousFolder = Path.GetDirectoryName(paths[0]);
+                OpenMedia($"file://{paths[0]}");
             }
         }
 
@@ -81,6 +84,14 @@ public class VideoManagerBehaviour : MonoBehaviour {
             }
         }
 
+        if (Input.GetKeyDown(KeyCode.M) && renderers.Length != 0) {
+            var cr = renderers[0].contentRenderer;
+            if (cr is Content180Renderer)
+                UpdateRenderers(cr.Source, force360: true);
+            else
+                UpdateRenderers(cr.Source, force180: true);
+        }
+
         if (Input.GetKeyDown(KeyCode.Space)) {
             if (!videoPlayer.isPrepared) {
                 Debug.Log("Preparing video.");
@@ -94,7 +105,69 @@ public class VideoManagerBehaviour : MonoBehaviour {
                 action(videoPlayer);
 
         Math.Clamp(videoPlayer.time, 0, videoPlayer.length);
-        Cursor.visible = !videoPlayer.isPlaying;
-        Cursor.lockState = videoPlayer.isPlaying ? CursorLockMode.Locked : CursorLockMode.None;
+        Cursor.visible = false;// !videoPlayer.isPlaying;
+        Cursor.lockState = CursorLockMode.Locked;// videoPlayer.isPlaying ? CursorLockMode.Locked : CursorLockMode.None;
+    }
+
+    private void OpenMedia(string path) {
+        videoPlayer.Stop();
+        // VideoPlayer does not report not being able to open the video with
+        // an exception, but by using an event.
+        // I get using events for errors along the stream, but the initial
+        // decoding? Bleh.
+        // I don't want to trust file extensions, and would love to just let
+        // Unity handle everything, so `OpenMediaNonVideo` is subscribed to
+        // the error event.
+        videoPlayer.url = path;
+        videoPlayer.Play();
+    }
+    
+    private void HandlePreparedVideo(VideoPlayer source) {
+        UpdateRenderers(source.texture);
+        source.isLooping = true;
+    }
+
+    // Triggers on error, in particular on "not a video"-errors.
+    private void OpenMediaNonVideo(VideoPlayer source, string message) {
+        // Make sure this actually has to do with the file format sent.
+        if (!message.StartsWith("VideoPlayer cannot play url"))
+            return;
+        Debug.Log("Attempting to recover with non-video formats...");
+
+        string path = source.url;
+        if (path.StartsWith("file://")) {
+            path = path[7..];
+        }
+
+        // Try other things.
+        // Currently tried: images
+        try {
+            Texture2D tex = new(2, 2);
+            if (!ImageConversion.LoadImage(tex, File.ReadAllBytes(path)))
+                throw new InvalidOperationException($"Could not load image file at {path}");
+            UpdateRenderers(tex);
+        } catch (Exception e) {
+            // (This catches both IO exceptions and the custom one above)
+            Debug.LogError($"Something went wrong while loading {path}:\n{e}");
+            return;
+        }
+    }
+
+    void UpdateRenderers(Texture tex, bool force180 = false, bool force360 = false) {
+        Debug.Log($"Content resolution {tex.width}Å~{tex.height}");
+        rt = new(tex.width, tex.height, 0, RenderTextureFormat.Default);
+        
+        IVRContentRenderer result;
+        if ((VRContentRendererHelper.Is360(tex) && !force180) || force360)
+            result = new Content360Renderer { Source = tex };
+        else
+            result = new Content180Renderer { Source = tex };
+
+        foreach (var renderer in renderers) {
+            renderer.contentRenderer = result;
+            SkyboxMaterial.mainTexture = rt;
+            renderer.SkyboxRenderTexture = rt;
+            renderer.BlitPartMaterial = BlitPartMaterial;
+        }
     }
 }

@@ -10,16 +10,20 @@ public class PlayerCameraBehaviour : MonoBehaviour {
     public float horizontalSensitivity = 1;
     [Range(0f, 10f)]
     public float verticalSensitivity = 1;
+    [Range(0f, 10f)]
+    public float scrollSensitivity = 3;
     public bool flipHorizontal = false;
     public bool flipVertical = false;
+    public bool flipScroll = false;
+
+    public Camera[] cameras;
 
     public VideoPlayer pauseQuerier;
 
     public Vector2 verticalClampDegrees = new(-70f, 70f);
 
     public void Update() {
-        if (pauseQuerier == null || pauseQuerier.isPlaying)
-            HandleMouseMovement();
+        HandleMouseMovement();
     }
 
     void HandleMouseMovement() {
@@ -36,5 +40,15 @@ public class PlayerCameraBehaviour : MonoBehaviour {
         eulerAngles.x = Mathf.Clamp(eulerAngles.x + v, verticalClampDegrees.x, verticalClampDegrees.y);
         eulerAngles.y += h;
         transform.rotation = Quaternion.Euler(eulerAngles);
+
+        if (Input.mouseScrollDelta.y != 0) {
+            float fovChange = Mathf.Sign(Input.mouseScrollDelta.y);
+            if (flipScroll)
+                fovChange *= -1;
+
+            foreach (var camera in cameras) {
+                camera.fieldOfView += scrollSensitivity * fovChange;
+            }
+        }
     }
 }
