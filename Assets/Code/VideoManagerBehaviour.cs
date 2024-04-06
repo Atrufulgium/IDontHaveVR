@@ -11,6 +11,7 @@ public class VideoManagerBehaviour : MonoBehaviour {
     RenderTexture rt = null;
     public Material SkyboxMaterial;
     public Material BlitPartMaterial;
+    public Material FishMaterial;
 
     public Camera leftEye;
     public Camera rightEye;
@@ -35,23 +36,23 @@ public class VideoManagerBehaviour : MonoBehaviour {
     }
 
     static readonly (KeyCode, Action<VideoPlayer>)[] videoActions = new (KeyCode, Action<VideoPlayer>)[] {
-        (KeyCode.LeftArrow, v => v.time -= 5),
-        (KeyCode.RightArrow, v => v.time += 5),
-        (KeyCode.J, v => v.time -= 10),
-        (KeyCode.L, v => v.time += 10),
-        (KeyCode.Alpha0, v => v.time = 0),
-        (KeyCode.Alpha1, v => v.time = 0.1 * v.length),
-        (KeyCode.Alpha2, v => v.time = 0.2 * v.length),
-        (KeyCode.Alpha3, v => v.time = 0.3 * v.length),
-        (KeyCode.Alpha4, v => v.time = 0.4 * v.length),
-        (KeyCode.Alpha5, v => v.time = 0.5 * v.length),
-        (KeyCode.Alpha6, v => v.time = 0.6 * v.length),
-        (KeyCode.Alpha7, v => v.time = 0.7 * v.length),
-        (KeyCode.Alpha8, v => v.time = 0.8 * v.length),
-        (KeyCode.Alpha9, v => v.time = 0.9 * v.length),
-        (KeyCode.K, v => { if (v.isPlaying) v.Pause(); else v.Play(); }),
-        (KeyCode.Space, v => { if (v.isPlaying) v.Pause(); else v.Play(); }),
-        (KeyCode.F, v => Screen.fullScreen = !Screen.fullScreen),
+        (KeyCode.LeftArrow, v => Seek(v, v.time - 5)),
+        (KeyCode.RightArrow, v => Seek(v, v.time + 5)),
+        (KeyCode.J, v => Seek(v, v.time - 10)),
+        (KeyCode.L, v => Seek(v, v.time + 10)),
+        (KeyCode.Alpha0, v => Seek(v, 0)),
+        (KeyCode.Alpha1, v => Seek(v, 0.1 * v.length)),
+        (KeyCode.Alpha2, v => Seek(v, 0.2 * v.length)),
+        (KeyCode.Alpha3, v => Seek(v, 0.3 * v.length)),
+        (KeyCode.Alpha4, v => Seek(v, 0.4 * v.length)),
+        (KeyCode.Alpha5, v => Seek(v, 0.5 * v.length)),
+        (KeyCode.Alpha6, v => Seek(v, 0.6 * v.length)),
+        (KeyCode.Alpha7, v => Seek(v, 0.7 * v.length)),
+        (KeyCode.Alpha8, v => Seek(v, 0.8 * v.length)),
+        (KeyCode.Alpha9, v => Seek(v, 0.9 * v.length)),
+        (KeyCode.K, v => { if (v.isPlaying) v.Pause(); else v.Play(); AnnouncePlaying(v); }),
+        (KeyCode.Space, v => { if (v.isPlaying) v.Pause(); else v.Play(); AnnouncePlaying(v); }),
+        (KeyCode.F, v => { Screen.fullScreen = !Screen.fullScreen; AnnounceFullscreen(Screen.fullScreen); }),
     };
 
     
@@ -82,14 +83,19 @@ public class VideoManagerBehaviour : MonoBehaviour {
                 }
                 camera.rect = rect;
             }
+            // Excessively magic and dependent on the editor order
+            // I'm not going for any decent architecture, fortunately
+            AnnounceCrosseye(eyes[0].rect.x == 0f);
         }
 
-        if (Input.GetKeyDown(KeyCode.M) && renderers.Length != 0) {
+        if (Input.GetKeyDown(KeyCode.R) && renderers.Length != 0) {
             var cr = renderers[0].contentRenderer;
             if (cr is Content180Renderer)
-                UpdateRenderers(cr.Source, force360: true);
+                UpdateRenderers(cr.Source, new ContentFisheye180Renderer());
+            else if (cr is ContentFisheye180Renderer)
+                UpdateRenderers(cr.Source, new Content360Renderer());
             else
-                UpdateRenderers(cr.Source, force180: true);
+                UpdateRenderers(cr.Source, new Content180Renderer());
         }
 
         if (Input.GetKeyDown(KeyCode.Space)) {
@@ -104,7 +110,6 @@ public class VideoManagerBehaviour : MonoBehaviour {
             if (Input.GetKeyDown(key))
                 action(videoPlayer);
 
-        Math.Clamp(videoPlayer.time, 0, videoPlayer.length);
         Cursor.visible = false;// !videoPlayer.isPlaying;
         Cursor.lockState = CursorLockMode.Locked;// videoPlayer.isPlaying ? CursorLockMode.Locked : CursorLockMode.None;
     }
@@ -123,7 +128,7 @@ public class VideoManagerBehaviour : MonoBehaviour {
     }
     
     private void HandlePreparedVideo(VideoPlayer source) {
-        UpdateRenderers(source.texture);
+        UpdateRenderers(source.texture, DetectRenderer(source.texture));
         source.isLooping = true;
     }
 
@@ -145,7 +150,7 @@ public class VideoManagerBehaviour : MonoBehaviour {
             Texture2D tex = new(2, 2);
             if (!ImageConversion.LoadImage(tex, File.ReadAllBytes(path)))
                 throw new InvalidOperationException($"Could not load image file at {path}");
-            UpdateRenderers(tex);
+            UpdateRenderers(tex, DetectRenderer(tex));
         } catch (Exception e) {
             // (This catches both IO exceptions and the custom one above)
             Debug.LogError($"Something went wrong while loading {path}:\n{e}");
@@ -153,21 +158,67 @@ public class VideoManagerBehaviour : MonoBehaviour {
         }
     }
 
-    void UpdateRenderers(Texture tex, bool force180 = false, bool force360 = false) {
+    IVRContentRenderer DetectRenderer(Texture tex) {
+        if (VRContentRendererHelper.Is360(tex))
+            return new Content360Renderer { Source = tex };
+        else
+            return new Content180Renderer { Source = tex };
+    }
+
+    static void Seek(VideoPlayer v, double time) {
+        time = Math.Clamp(time, 0, v.length);
+        v.time = time;
+        AnnounceTime(v, time);
+    }
+
+    void UpdateRenderers(Texture tex, IVRContentRenderer result) {
         Debug.Log($"Content resolution {tex.width}Å~{tex.height}");
         rt = new(tex.width, tex.height, 0, RenderTextureFormat.Default);
         
-        IVRContentRenderer result;
-        if ((VRContentRendererHelper.Is360(tex) && !force180) || force360)
-            result = new Content360Renderer { Source = tex };
-        else
-            result = new Content180Renderer { Source = tex };
+        result.Source = tex;
 
         foreach (var renderer in renderers) {
             renderer.contentRenderer = result;
             SkyboxMaterial.mainTexture = rt;
             renderer.SkyboxRenderTexture = rt;
             renderer.BlitPartMaterial = BlitPartMaterial;
+            renderer.FishMaterial = FishMaterial;
         }
+
+        AnnounceRenderer(result);
+    }
+
+    static void AnnounceTime(VideoPlayer videoPlayer, double newTime) {
+        var length = (int)videoPlayer.length;
+        var current = (int)newTime;
+
+        AnnounceManagerBehaviour.Announce(
+            $"Seek: {current/60}:{current%60:D2} / {length/60}:{length%60:D2}"
+        );
+    }
+
+    static void AnnouncePlaying(VideoPlayer videoPlayer) {
+        if (videoPlayer.isPlaying)
+            AnnounceManagerBehaviour.Announce("Playback: Resumed");
+        else
+            AnnounceManagerBehaviour.Announce("Playback: Paused");
+    }
+
+    static void AnnounceFullscreen(bool fullScreen) {
+        if (fullScreen)
+            AnnounceManagerBehaviour.Announce("Display: Full screen");
+        else
+            AnnounceManagerBehaviour.Announce("Display: Windowed");
+    }
+
+    static void AnnounceRenderer(IVRContentRenderer renderer) {
+        AnnounceManagerBehaviour.Announce($"Rendering: {renderer.Name}");
+    }
+
+    static void AnnounceCrosseye(bool isCrossEyed) {
+        if (isCrossEyed)
+            AnnounceManagerBehaviour.Announce("Stereo: Cross-eyed");
+        else
+            AnnounceManagerBehaviour.Announce("Stereo: Parallel-eyed");
     }
 }
